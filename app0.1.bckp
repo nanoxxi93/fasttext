@@ -1,0 +1,316 @@
+import os
+import fasttext
+import json
+from flask import Flask, jsonify, request, url_for, render_template
+from flask import render_template, Blueprint, make_response, request
+import logging
+import datetime
+import re
+
+app = Flask(__name__)
+
+class PrefixMiddleware(object):
+#class for URL sorting 
+    def __init__(self, app, prefix=''):
+        self.app = app
+        self.prefix = prefix
+
+    def __call__(self, environ, start_response):
+        #in this line I'm doing a replace of the word flaskredirect which is my app name in IIS to ensure proper URL redirect
+        if environ['PATH_INFO'].lower().replace('/fasttext','').startswith(self.prefix):
+            environ['PATH_INFO'] = environ['PATH_INFO'].lower().replace('/fasttext','')[len(self.prefix):]
+            environ['SCRIPT_NAME'] = self.prefix
+            return self.app(environ, start_response)
+        else:
+            start_response('404', [('Content-Type', 'text/plain')])            
+            return ['This url does not belong to the app.'.encode()]
+
+app.wsgi_app = PrefixMiddleware(app.wsgi_app, prefix='/api')
+
+logging.basicConfig(filename='log.log',level=logging.DEBUG,format='%(asctime)s - %(process)d-%(levelname)s-%(message)s')
+
+def classifierMethod(method, modelname, text):
+    model = fasttext.load_model('{}.bin'.format(modelname))
+    if (method == 'text'):
+        preprocessedtext = preprocesing(text)
+        # Ejecutando análisis
+        analysis = model.predict(preprocessedtext.lower(), k=5)
+        robject = []
+        for x in range(5):
+            robject.append({
+                'text': text,
+                'class': str(analysis[0][x]).replace('__label__',''),
+                'confidence': analysis[1][x]
+            })
+        result = robject
+    elif  (method == 'file'):
+        f = open('{}.txt'.format(text), 'r', encoding='utf8')
+        w = open('result_{}_{}.txt'.format(text, datetime.datetime.now().strftime('%Y%m%d_%H%M%S')), 'a', encoding='utf8')
+        result = []
+        for x in f:
+            textrow = preprocesing(x)
+            # Quitando el enter del final de la linea
+            textrow = str(textrow).replace('\n','')
+            # Ejecutando análisis
+            # if (textrow.find('ofreciendo seudo servicio dizque',) != -1):
+            analysis = model.predict(textrow.lower(), k=5)
+            w.write('{}|{}|{}\n'.format(str(x).replace('\n',''), analysis[0][0], str(analysis[1][0])))
+            result.append({
+                'text': x,
+                'class': str(analysis[0][0]).replace('__label__',''),
+                'confidence': analysis[1][0]
+            })
+        w.close()
+        f.close()
+    else:
+        result = 'Seleccione un método entre text o file'
+    return result
+
+def preprocesing(text):
+    text = re.sub(r'[:][\\]', ' ', text) # preprocesando slash invertido cuando es parte de cara
+    text = re.sub(r'[.\!?,\'/():<>|][\s]', ' ', text) # preprocesando simbolos que tienen junto un espacio
+    text = re.sub(r'[.\!?,\'/():<>|]', ' ', text) # preprocesando simbolos sin espacio
+    text = re.sub(r'[\\][\s]', ' ', text) # preprocesando los slash invertidos seguidos de un espacio
+    text = text.replace('\r\n','\n')
+    text = re.sub(r'[\s]{2,}', ' ', text) # preprocesando los multiples espacios en 1 espacio, despues de \r\n porque genera conflicto con \r\n
+    text = text.replace('\"','')
+    text = text.replace('\\','')
+    text = text.lower() # preprocesando todo a minúsculas
+    return text
+
+def preprocesinglatin(text):
+    text = re.sub(r'[á]', 'a', text) # preprocesando tildes
+    text = re.sub(r'[é]', 'e', text) # preprocesando tildes
+    text = re.sub(r'[í]', 'i', text) # preprocesando tildes
+    text = re.sub(r'[ó]', 'o', text) # preprocesando tildes
+    text = re.sub(r'[ú]', 'u', text) # preprocesando tildes
+    text = re.sub(r'[à]', 'a', text) # preprocesando tildes
+    text = re.sub(r'[è]', 'e', text) # preprocesando tildes
+    text = re.sub(r'[ì]', 'i', text) # preprocesando tildes
+    text = re.sub(r'[ò]', 'o', text) # preprocesando tildes
+    text = re.sub(r'[ù]', 'u', text) # preprocesando tildes
+    text = re.sub(r'[â]', 'a', text) # preprocesando tildes
+    text = re.sub(r'[ê]', 'e', text) # preprocesando tildes
+    text = re.sub(r'[î]', 'i', text) # preprocesando tildes
+    text = re.sub(r'[ô]', 'o', text) # preprocesando tildes
+    text = re.sub(r'[û]', 'u', text) # preprocesando tildes
+    text = text.replace('\r\n','\n')
+    return text
+
+def preprocessingpersonalized(text, oldtext="", newtext=""):
+    # preprocesado personalizado
+    if (oldtext != ""):
+        text = text.replace('{}'.format(oldtext),'{}'.format(newtext))
+        text = text.replace('@{}'.format(oldtext),'@{}'.format(newtext))
+        text = text.replace('#{}'.format(oldtext),'#{}'.format(newtext))
+        text = text.replace('${}'.format(oldtext),'${}'.format(newtext))
+    text = text.replace('\r\n','\n')
+    text = text.replace('\r\n','\n')
+    return text
+
+def openLocalFile(filename):
+    # archivo sin preprocesar
+    fileini = open('{}.txt'.format(filename), 'rt', encoding='utf8')
+    # leyendo archivo
+    data = fileini.read()
+    # preprocesando
+    data = preprocesing(data)
+    # cerrar archivo
+    fileini.close()
+    # nuevo archivo para data preprocesada
+    fileout = open('{}_preprocessed.txt'.format(filename), 'wt', encoding='utf8')
+    # copiando data
+    fileout.write(data)
+    # cerrar archivo
+    fileout.close()
+    return ""
+
+def openFormFile(formfile):
+    # leyendo archivo
+    data = formfile.read().decode('utf-8')
+    # preprocesando
+    data = preprocesing(data)
+    # preprocesando tildes
+    data = preprocesinglatin(data)
+    # nuevo archivo para data preprocesada
+    fileout = open('{}_preprocessed.txt'.format(formfile.filename.rsplit(".",1)[0]), 'wt', encoding='utf8')
+    # copiando data
+    fileout.write(data)
+    # cerrar archivo
+    fileout.close()
+    return ""
+
+def openFormFileLatin(formfile):
+    # leyendo archivo
+    data = formfile.read().decode('utf-8')
+    # preprocesando tildes
+    data = preprocesinglatin(data)
+    # nuevo archivo para data preprocesada
+    fileout = open('{}_preprocessed_latin.txt'.format(formfile.filename.rsplit(".",1)[0]), 'wt', encoding='utf8')
+    # copiando data
+    fileout.write(data)
+    # cerrar archivo
+    fileout.close()
+    return ""
+
+def openFormFilePersonalized(formfile, oldtext="", newtext=""):
+    # leyendo archivo
+    data = formfile.read().decode('utf-8')
+    # preprocesando
+    data = preprocessingpersonalized(data, oldtext, newtext)
+    # nuevo archivo para data preprocesada
+    fileout = open('{}.txt'.format(formfile.filename.rsplit(".",1)[0]), 'wt', encoding='utf8')
+    # copiando data
+    fileout.write(data)
+    # cerrar archivo
+    fileout.close()
+    return ""
+
+@app.route('/models', methods=['GET'])
+def modelsController():
+    try:
+        if (request.method == 'GET'):
+            result = [x for x in os.listdir() if x.endswith('.bin')]
+        else:
+            result = 'Seleccione un método de request válido'    
+        return jsonify(result),200
+    except Exception as e:
+        logging.exception('Exception occurred {}'.format(e))
+        return jsonify(str(e)),401
+
+@app.route('/classifier', methods=['GET','POST'])
+def classifierController():
+    try:
+        if (request.method == 'POST'):
+            if (len(request.files) == 0):
+                some_json = request.get_json()#request -> json
+                result = classifierMethod(some_json['method'],some_json['model'],some_json['text'])
+            else:
+                formfile = request.files['']
+                filename = formfile.filename.rsplit(".",1)[0]
+                openFormFile(formfile)
+                result = classifierMethod('file', request.form['modelname'], '{}_preprocessed'.format(filename))
+        elif (request.method == 'GET'):
+            result = classifierMethod(request.args.get('method'),request.args.get('model'),request.args.get('text'))
+        else:
+            result = 'Seleccione un método de request válido'    
+        return jsonify(result),200
+    except Exception as e:
+        logging.exception('Exception occurred {}'.format(e))
+        return jsonify(str(e)),401
+
+@app.route('/model', methods=['GET','POST'])
+def modelController():
+    try:
+        if (request.method == 'POST'):
+            if (len(request.files) == 0):
+                some_json = request.get_json()#request -> json
+                filename = some_json['filename']
+                openLocalFile(filename)
+            else:
+                formfile = request.files['']
+                filename = formfile.filename.rsplit(".",1)[0]
+                openFormFile(formfile)
+        elif (request.method == 'GET'):
+            filename = request.args.get('filename')
+            openLocalFile(filename)
+        # entrenando modelo con data preprocesada
+        model = fasttext.train_supervised(input='{}_preprocessed.txt'.format(filename), epoch=100, lr=1.0, wordNgrams=2)
+        # estableciendo nombre del archivo del modelo
+        # name = '{}_{}.bin'.format(filename, datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))
+        name = '{}.bin'.format(filename)
+        # guardando modelo
+        model.save_model(name)
+        return jsonify(name),200
+    except Exception as e:
+        logging.exception('Exception occurred {}'.format(e))
+        return jsonify(str(e)),401
+
+@app.route('/test', methods=['GET','POST'])
+def testController():
+    try:
+        if (request.method == 'POST'):
+            if (len(request.files) == 0):
+                some_json = request.get_json()#request -> json
+                modelname = some_json['modelname']
+                filename = some_json['filename']
+                openLocalFile(filename)
+            else:
+                modelname = request.form['modelname']
+                formfile = request.files['']
+                filename = formfile.filename.rsplit(".",1)[0]
+                openFormFile(formfile)
+        elif (request.method == 'GET'):
+            modelname = request.args.get('modelname')
+            filename = request.args.get('filename')
+            openLocalFile(filename)
+        # test de texto con el modelo
+        model = fasttext.load_model('{}.bin'.format(modelname))
+        result = model.test('{}_preprocessed.txt'.format(filename))
+        return jsonify(result),200
+    except Exception as e:
+        logging.exception('Exception occurred {}'.format(e))
+        return jsonify(str(e)),401
+
+@app.route('/preprocess', methods=['GET','POST'])
+def preprocessController():
+    try:
+        if (request.method == 'POST'):
+            if (len(request.files) == 0):
+                result = 'Archivo no encontrado'
+            else:
+                formfile = request.files['']
+                filename = formfile.filename.rsplit(".",1)[0]
+                openFormFile(formfile)
+                result = '{}_preprocessed.txt'.format(filename)
+        elif (request.method == 'GET'):
+            result = 'Método sin respuesta'
+        return jsonify(result),200
+    except Exception as e:
+        logging.exception('Exception occurred {}'.format(e))
+        return jsonify(str(e)),401
+
+@app.route('/preprocess/latin', methods=['GET','POST'])
+def preprocessTildeController():
+    try:
+        if (request.method == 'POST'):
+            if (len(request.files) == 0):
+                result = 'Archivo no encontrado'
+            else:
+                formfile = request.files['']
+                filename = formfile.filename.rsplit(".",1)[0]
+                openFormFileLatin(formfile)
+                result = '{}_preprocessed_latin.txt'.format(filename)
+        elif (request.method == 'GET'):
+            result = 'Método sin respuesta'
+        return jsonify(result),200
+    except Exception as e:
+        logging.exception('Exception occurred {}'.format(e))
+        return jsonify(str(e)),401
+
+@app.route('/preprocess/personalized', methods=['GET','POST'])
+def preprocessPersonalizedController():
+    try:
+        if (request.method == 'POST'):
+            if (len(request.files) == 0):
+                result = 'Archivo no encontrado'
+            else:
+                formfile = request.files['']
+                oldtext = request.form['oldtext']
+                newtext = request.form['newtext']
+                filename = formfile.filename.rsplit(".",1)[0]
+                openFormFilePersonalized(formfile, oldtext, newtext)
+                result = '{}.txt'.format(filename)
+        elif (request.method == 'GET'):
+            result = 'Método sin respuesta'
+        return jsonify(result),200
+    except Exception as e:
+        logging.exception('Exception occurred {}'.format(e))
+        return jsonify(str(e)),401
+
+@app.route('/values')
+def valuesController():
+    return jsonify({'about':'FLASK API REST RUNNING'})
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0',port=9010)
